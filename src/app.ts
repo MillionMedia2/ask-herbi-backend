@@ -9,7 +9,7 @@ const app = express();
 app.use(express.json());
 app.get('/ping', (req, res) => {
   return res.json({
-    message: "pong - the server is running";
+    message: "pong - the server is running",
   });
 });
 app.use("/api", aiRoutes);

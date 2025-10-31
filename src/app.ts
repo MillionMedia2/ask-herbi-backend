@@ -7,7 +7,7 @@ dotenv.config();
 const app = express();
 
 app.use(express.json());
-app.get('/ping', (req, res) => {
+app.get("/ping", (req, res) => {
   return res.json({
     message: "pong - the server is running",
   });

@@ -6,6 +6,7 @@ const aiService = new AIService();
 export const askAI = async (req: Request, res: Response) => {
   try {
     const { question } = req.body;
+    console.log("📩 Received question:", question);
 
     if (!question || typeof question !== "string") {
       return res

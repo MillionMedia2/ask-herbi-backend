@@ -132,6 +132,6 @@ Return only the best matching category name.
   return {
     category,
     count: matchedProducts.length,
-    products: matchedProducts.slice(0, 5),
+    products: matchedProducts,
   };
 };

@@ -1,5 +1,6 @@
 import express from "express";
 import dotenv from "dotenv";
+import cors from "cors";
 import aiRoutes from "./routes/ai.routes";
 import productsRoute from "./routes/productRoutes";
 import classifyRoute from "./routes/classifyRoutes";
@@ -9,6 +10,7 @@ dotenv.config();
 
 const app = express();
 
+app.use(cors());
 app.use(express.json());
 app.use(morgan("dev"));
 

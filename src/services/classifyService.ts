@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import axios from "axios";
+import Product from "../models/Product";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -67,17 +67,6 @@ const PRODUCT_CATEGORY_OVERRIDE: Record<string, string> = {
   "a.vogel milk thistle complex tablets": "Gastrointestinal Disorders",
 };
 
-// ✅ fetch WooCommerce products dynamically
-const fetchWooProducts = async () => {
-  try {
-    const { data } = await axios.get(`${process.env.BASE_URL}/api/products`);
-    return data;
-  } catch (err: any) {
-    console.error("Failed to fetch WooCommerce products:", err.message);
-    return [];
-  }
-};
-
 export const classifyConversation = async (message: string) => {
   // Step 1: classify message
   const prompt = `
@@ -100,7 +89,7 @@ Return only the best matching category name.
     response.choices[0].message?.content?.trim() || "General Wellness";
 
   // Step 2: fetch WooCommerce products from API
-  const products = await fetchWooProducts();
+  const products = await Product.find({});
 
   // Step 3: match products
   const matchedProducts = products.filter((p: any) => {

@@ -6,6 +6,8 @@ dotenv.config();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  timeout: 120000, // 2 minutes timeout for long responses
+  maxRetries: 3, // Retry failed requests up to 3 times
 });
 
 const cache = new Map<string, string>();
@@ -64,7 +66,7 @@ export class AIService {
         content: question,
       });
 
-      // Run the assistant
+      // Run the assistant with increased timeout
       const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
         assistant_id: assistantId,
       });
@@ -129,7 +131,7 @@ export class AIService {
   }
 
   /**
-   * Streaming version with custom ReadableStream for easier consumption
+   * Streaming version with enhanced error handling and connection recovery
    */
   async getAnswerStreamTransformed({
     question,
@@ -138,45 +140,133 @@ export class AIService {
   }): Promise<ReadableStream<string>> {
     const { stream } = await this.getAnswerStream({ question });
     let fullAnswer = "";
+    let lastEventTime = Date.now();
+    const HEARTBEAT_INTERVAL = 15000; // 15 seconds
+    let heartbeatTimer: NodeJS.Timeout | null = null;
 
     return new ReadableStream<string>({
       async start(controller) {
         try {
-          for await (const event of stream) {
-            // Handle different event types
-            if (event.event === "thread.message.delta") {
-              const delta = event.data.delta;
+          // Set up heartbeat monitoring to detect stale connections
+          heartbeatTimer = setInterval(() => {
+            const timeSinceLastEvent = Date.now() - lastEventTime;
+            if (timeSinceLastEvent > HEARTBEAT_INTERVAL * 2) {
+              console.warn(
+                `⚠️  No events received for ${timeSinceLastEvent}ms, connection may be stale`
+              );
+            }
+          }, HEARTBEAT_INTERVAL);
 
-              if (delta.content) {
-                for (const content of delta.content) {
-                  if (content.type === "text" && content.text?.value) {
-                    const text = content.text.value;
-                    fullAnswer += text;
-                    controller.enqueue(text);
+          try {
+            for await (const event of stream) {
+              lastEventTime = Date.now();
+
+              // Log events for debugging (remove in production if too verbose)
+              console.log(`📦 Event: ${event.event}`);
+
+              // Handle different event types
+              if (event.event === "thread.message.delta") {
+                const delta = event.data.delta;
+
+                if (delta.content) {
+                  for (const content of delta.content) {
+                    if (content.type === "text" && content.text?.value) {
+                      const text = content.text.value;
+                      fullAnswer += text;
+                      controller.enqueue(text);
+                    }
                   }
                 }
               }
-            }
 
-            // Handle completion
-            if (event.event === "thread.message.completed") {
-              if (fullAnswer) {
-                cache.set(question, fullAnswer);
+              // Handle completion
+              if (event.event === "thread.message.completed") {
+                console.log("✅ Message completed");
+                if (fullAnswer) {
+                  cache.set(question, fullAnswer);
+                }
+              }
+
+              // Handle run completion
+              if (event.event === "thread.run.completed") {
+                console.log("✅ Run completed");
+              }
+
+              // Handle errors
+              if (event.event === "thread.run.failed") {
+                console.error("❌ Run failed");
+                controller.error(new Error("Run failed"));
+                if (heartbeatTimer) clearInterval(heartbeatTimer);
+                break;
+              }
+
+              if (event.event === "thread.run.cancelled") {
+                console.error("❌ Run cancelled");
+                controller.error(new Error("Run cancelled"));
+                if (heartbeatTimer) clearInterval(heartbeatTimer);
+                break;
               }
             }
 
-            // Handle errors
-            if (event.event === "thread.run.failed") {
-              controller.error(new Error("Run failed"));
-              break;
+            // Clean up and close successfully
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            console.log(
+              `✅ Stream completed. Total length: ${fullAnswer.length} chars`
+            );
+            controller.close();
+          } catch (streamError: any) {
+            // Clean up heartbeat timer
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+
+            // Handle connection termination gracefully
+            const errorMessage = streamError.message?.toLowerCase() || "";
+            const causeMessage =
+              streamError.cause?.message?.toLowerCase() || "";
+
+            const isConnectionError =
+              errorMessage.includes("terminated") ||
+              errorMessage.includes("closed") ||
+              causeMessage.includes("terminated") ||
+              causeMessage.includes("closed") ||
+              streamError.code === "UND_ERR_SOCKET";
+
+            if (isConnectionError) {
+              console.warn(
+                `⚠️  Connection terminated unexpectedly. Received ${fullAnswer.length} characters before disconnect.`
+              );
+
+              // If we got partial content, save it and close gracefully
+              if (fullAnswer && fullAnswer.length > 0) {
+                console.log(
+                  "💾 Caching partial response and closing gracefully"
+                );
+                cache.set(question, fullAnswer);
+                controller.close(); // Close gracefully with partial data
+              } else {
+                console.error(
+                  "❌ Connection terminated before receiving any data"
+                );
+                controller.error(
+                  new Error("Connection terminated before receiving any data")
+                );
+              }
+            } else {
+              // For other errors, log and throw
+              console.error("❌ Unexpected stream error:", streamError);
+              throw streamError;
             }
           }
-
-          controller.close();
-        } catch (error) {
-          console.error("Stream processing error:", error);
+        } catch (error: any) {
+          console.error("❌ Stream processing error:", error);
+          if (heartbeatTimer) clearInterval(heartbeatTimer);
           controller.error(error);
         }
+      },
+
+      // Add cancel handler to clean up resources
+      cancel() {
+        console.log("🛑 Stream cancelled by consumer");
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
       },
     });
   }

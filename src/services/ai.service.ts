@@ -6,268 +6,188 @@ dotenv.config();
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
-  timeout: 120000, // 2 minutes timeout for long responses
-  maxRetries: 3, // Retry failed requests up to 3 times
+  timeout: 120000,
+  maxRetries: 3,
 });
 
+// Store conversation history by conversation ID
+const conversationStore = new Map<
+  string,
+  Array<{ role: string; content: string }>
+>();
 const cache = new Map<string, string>();
 
 export class AIService {
-  private assistantId: string | null = null;
-
   /**
-   * Initialize or get existing assistant with vector store
+   * Non-streaming version with conversation history
    */
-  private async getOrCreateAssistant() {
-    if (this.assistantId) {
-      return this.assistantId;
-    }
-
+  async getAnswer({
+    question,
+    conversationId,
+  }: {
+    question: string;
+    conversationId?: string;
+  }) {
     try {
-      // Create assistant with file_search tool and vector store
-      const assistant = await openai.beta.assistants.create({
-        name: "Herbal Expert",
-        instructions: HERBAL_EXPERT_PROMPT,
-        model: "gpt-4o-mini",
-        tools: [{ type: "file_search" }],
-        tool_resources: {
-          file_search: {
-            vector_store_ids: [process.env.OPENAI_VECTOR_STORE_ID!],
-          },
+      // Get or initialize conversation history
+      const conversationHistory = conversationId
+        ? conversationStore.get(conversationId) || []
+        : [];
+
+      // Build messages array
+      const messages: Array<{ role: string; content: string }> = [
+        {
+          role: "system",
+          content: HERBAL_EXPERT_PROMPT,
         },
+        ...conversationHistory,
+        {
+          role: "user",
+          content: question,
+        },
+      ];
+
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: messages as any,
       });
 
-      this.assistantId = assistant.id;
-      console.log("Assistant created:", this.assistantId);
-      return this.assistantId;
-    } catch (error: any) {
-      console.error("Error creating assistant:", error.message);
-      throw error;
-    }
-  }
+      const answer = completion.choices[0].message.content || "";
+      const responseId = completion.id;
 
-  /**
-   * Non-streaming version with vector store
-   */
-  async getAnswer({ question }: { question: string }) {
-    if (cache.has(question)) {
-      return { success: true, answer: cache.get(question)! };
-    }
-
-    try {
-      const assistantId = await this.getOrCreateAssistant();
-
-      // Create a thread
-      const thread = await openai.beta.threads.create();
-
-      // Add message to thread
-      await openai.beta.threads.messages.create(thread.id, {
-        role: "user",
-        content: question,
-      });
-
-      // Run the assistant with increased timeout
-      const run = await openai.beta.threads.runs.createAndPoll(thread.id, {
-        assistant_id: assistantId,
-      });
-
-      if (run.status === "completed") {
-        const messages = await openai.beta.threads.messages.list(thread.id);
-        const assistantMessage = messages.data[0];
-
-        let answer = "";
-        for (const content of assistantMessage.content) {
-          if (content.type === "text") {
-            answer += content.text.value;
-          }
-        }
-
-        cache.set(question, answer);
-        return { success: true, answer };
-      } else {
-        return {
-          success: false,
-          answer: `Run failed with status: ${run.status}`,
-        };
+      // Update conversation history if conversationId provided
+      if (conversationId) {
+        conversationHistory.push(
+          { role: "user", content: question },
+          { role: "assistant", content: answer }
+        );
+        conversationStore.set(conversationId, conversationHistory);
+        console.log(
+          `💾 Saved conversation history for: ${conversationId} (${conversationHistory.length} messages)`
+        );
       }
-    } catch (error: any) {
-      console.error("Error:", error.message);
-      return { success: false, answer: "Error: Unable to get response." };
-    }
-  }
-
-  /**
-   * Streaming version with vector store
-   */
-  async getAnswerStream({ question }: { question: string }): Promise<{
-    stream: AsyncIterable<any>;
-    threadId: string;
-  }> {
-    try {
-      const assistantId = await this.getOrCreateAssistant();
-
-      // Create a thread
-      const thread = await openai.beta.threads.create();
-
-      // Add message to thread
-      await openai.beta.threads.messages.create(thread.id, {
-        role: "user",
-        content: question,
-      });
-
-      // Create a run with streaming
-      const stream = openai.beta.threads.runs.stream(thread.id, {
-        assistant_id: assistantId,
-      });
 
       return {
-        stream,
-        threadId: thread.id,
+        success: true,
+        answer,
+        responseId,
+        conversationId: conversationId || responseId, // Return conversationId for tracking
       };
     } catch (error: any) {
-      console.error("Streaming Error:", error.message);
-      throw error;
+      console.error("Error:", error.message);
+      return {
+        success: false,
+        answer: "Error: Unable to get response.",
+        responseId: undefined,
+        conversationId: undefined,
+      };
     }
   }
 
   /**
-   * Streaming version with enhanced error handling and connection recovery
+   * Streaming version with conversation history
    */
   async getAnswerStreamTransformed({
     question,
+    conversationId,
   }: {
     question: string;
+    conversationId?: string;
   }): Promise<ReadableStream<string>> {
-    const { stream } = await this.getAnswerStream({ question });
     let fullAnswer = "";
-    let lastEventTime = Date.now();
-    const HEARTBEAT_INTERVAL = 15000; // 15 seconds
-    let heartbeatTimer: NodeJS.Timeout | null = null;
+    let responseId = "";
 
     return new ReadableStream<string>({
       async start(controller) {
         try {
-          // Set up heartbeat monitoring to detect stale connections
-          heartbeatTimer = setInterval(() => {
-            const timeSinceLastEvent = Date.now() - lastEventTime;
-            if (timeSinceLastEvent > HEARTBEAT_INTERVAL * 2) {
-              console.warn(
-                `⚠️  No events received for ${timeSinceLastEvent}ms, connection may be stale`
-              );
-            }
-          }, HEARTBEAT_INTERVAL);
+          // Get or initialize conversation history
+          const conversationHistory = conversationId
+            ? conversationStore.get(conversationId) || []
+            : [];
 
-          try {
-            for await (const event of stream) {
-              lastEventTime = Date.now();
+          // Build messages array
+          const messages: Array<{ role: string; content: string }> = [
+            {
+              role: "system",
+              content: HERBAL_EXPERT_PROMPT,
+            },
+            ...conversationHistory,
+            {
+              role: "user",
+              content: question,
+            },
+          ];
 
-              // Log events for debugging (remove in production if too verbose)
-              console.log(`📦 Event: ${event.event}`);
+          const stream = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: messages as any,
+            stream: true,
+            stream_options: {
+              include_usage: true,
+            },
+          });
 
-              // Handle different event types
-              if (event.event === "thread.message.delta") {
-                const delta = event.data.delta;
-
-                if (delta.content) {
-                  for (const content of delta.content) {
-                    if (content.type === "text" && content.text?.value) {
-                      const text = content.text.value;
-                      fullAnswer += text;
-                      controller.enqueue(text);
-                    }
-                  }
-                }
-              }
-
-              // Handle completion
-              if (event.event === "thread.message.completed") {
-                console.log("✅ Message completed");
-                if (fullAnswer) {
-                  cache.set(question, fullAnswer);
-                }
-              }
-
-              // Handle run completion
-              if (event.event === "thread.run.completed") {
-                console.log("✅ Run completed");
-              }
-
-              // Handle errors
-              if (event.event === "thread.run.failed") {
-                console.error("❌ Run failed");
-                controller.error(new Error("Run failed"));
-                if (heartbeatTimer) clearInterval(heartbeatTimer);
-                break;
-              }
-
-              if (event.event === "thread.run.cancelled") {
-                console.error("❌ Run cancelled");
-                controller.error(new Error("Run cancelled"));
-                if (heartbeatTimer) clearInterval(heartbeatTimer);
-                break;
-              }
+          for await (const chunk of stream) {
+            if (chunk.id && !responseId) {
+              responseId = chunk.id;
+              console.log(`📝 Response ID: ${responseId}`);
+              // Send conversation ID (use existing or new responseId)
+              const convId = conversationId || responseId;
+              controller.enqueue(`__CONVERSATION_ID__:${convId}\n`);
             }
 
-            // Clean up and close successfully
-            if (heartbeatTimer) clearInterval(heartbeatTimer);
-            console.log(
-              `✅ Stream completed. Total length: ${fullAnswer.length} chars`
-            );
-            controller.close();
-          } catch (streamError: any) {
-            // Clean up heartbeat timer
-            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            const delta = chunk.choices[0]?.delta?.content;
 
-            // Handle connection termination gracefully
-            const errorMessage = streamError.message?.toLowerCase() || "";
-            const causeMessage =
-              streamError.cause?.message?.toLowerCase() || "";
+            if (delta) {
+              fullAnswer += delta;
+              controller.enqueue(delta);
+            }
 
-            const isConnectionError =
-              errorMessage.includes("terminated") ||
-              errorMessage.includes("closed") ||
-              causeMessage.includes("terminated") ||
-              causeMessage.includes("closed") ||
-              streamError.code === "UND_ERR_SOCKET";
+            if (chunk.choices[0]?.finish_reason === "stop") {
+              console.log("✅ Stream completed");
 
-            if (isConnectionError) {
-              console.warn(
-                `⚠️  Connection terminated unexpectedly. Received ${fullAnswer.length} characters before disconnect.`
-              );
-
-              // If we got partial content, save it and close gracefully
-              if (fullAnswer && fullAnswer.length > 0) {
+              // Update conversation history
+              if (conversationId || responseId) {
+                const convId = conversationId || responseId;
+                conversationHistory.push(
+                  { role: "user", content: question },
+                  { role: "assistant", content: fullAnswer }
+                );
+                conversationStore.set(convId, conversationHistory);
                 console.log(
-                  "💾 Caching partial response and closing gracefully"
-                );
-                cache.set(question, fullAnswer);
-                controller.close(); // Close gracefully with partial data
-              } else {
-                console.error(
-                  "❌ Connection terminated before receiving any data"
-                );
-                controller.error(
-                  new Error("Connection terminated before receiving any data")
+                  `💾 Saved conversation history for: ${convId} (${conversationHistory.length} messages)`
                 );
               }
-            } else {
-              // For other errors, log and throw
-              console.error("❌ Unexpected stream error:", streamError);
-              throw streamError;
+
+              break;
             }
           }
+
+          controller.close();
         } catch (error: any) {
-          console.error("❌ Stream processing error:", error);
-          if (heartbeatTimer) clearInterval(heartbeatTimer);
+          console.error("❌ Stream error:", error);
           controller.error(error);
         }
       },
 
-      // Add cancel handler to clean up resources
       cancel() {
         console.log("🛑 Stream cancelled by consumer");
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
       },
     });
+  }
+
+  /**
+   * Clear conversation history for a given conversationId
+   */
+  clearConversation(conversationId: string) {
+    conversationStore.delete(conversationId);
+    console.log(`🗑️  Cleared conversation: ${conversationId}`);
+  }
+
+  /**
+   * Get conversation history length
+   */
+  getConversationLength(conversationId: string): number {
+    return conversationStore.get(conversationId)?.length || 0;
   }
 }

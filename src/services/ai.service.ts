@@ -90,9 +90,11 @@ export class AIService {
   async getAnswerStreamTransformed({
     question,
     conversationId,
+    saveHistory = true,
   }: {
     question: string;
     conversationId?: string;
+    saveHistory?: boolean;
   }): Promise<ReadableStream<string>> {
     let fullAnswer = "";
     let responseId = "";
@@ -146,8 +148,8 @@ export class AIService {
             if (chunk.choices[0]?.finish_reason === "stop") {
               console.log("✅ Stream completed");
 
-              // Update conversation history
-              if (conversationId || responseId) {
+              // Update conversation history only if saveHistory is true
+              if (saveHistory && (conversationId || responseId)) {
                 const convId = conversationId || responseId;
                 conversationHistory.push(
                   { role: "user", content: question },

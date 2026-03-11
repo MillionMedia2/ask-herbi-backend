@@ -26,7 +26,6 @@ export const createMessage = async (req: Request, res: Response) => {
       const stream = await aiService.getAnswerStreamTransformed({
         question: content,
         conversationId, // Pass conversationId to maintain context (but won't save to DB)
-        saveHistory: false, // Don't save conversation history when user is not logged in
       });
       const reader = stream.getReader();
 
@@ -114,9 +113,19 @@ export const createMessage = async (req: Request, res: Response) => {
 export const getMessages = async (req: Request, res: Response) => {
   try {
     const { conversationId } = req.params;
+    const conversationIdStr = Array.isArray(conversationId) 
+      ? conversationId[0] 
+      : conversationId;
+
+    if (!conversationIdStr) {
+      return res.status(400).json({
+        success: false,
+        message: "conversationId is required",
+      });
+    }
 
     const messages = await MessageService.getMessagesByConversation(
-      conversationId
+      conversationIdStr
     );
 
     res.status(200).json({

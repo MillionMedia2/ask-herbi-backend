@@ -48,10 +48,19 @@ export const getAllConversations = async (req: Request, res: Response) => {
 export const updateConversation = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const idStr = Array.isArray(id) ? id[0] : id;
+    
+    if (!idStr) {
+      return res.status(400).json({
+        success: false,
+        message: "id is required",
+      });
+    }
+
     const updateData = req.body; // Generic update, currently only title but extensible
 
     const updatedConversation = await ConversationService.updateConversation(
-      id,
+      idStr,
       updateData
     );
 
@@ -71,8 +80,16 @@ export const updateConversation = async (req: Request, res: Response) => {
 export const deleteConversation = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const idStr = Array.isArray(id) ? id[0] : id;
+    
+    if (!idStr) {
+      return res.status(400).json({
+        success: false,
+        message: "id is required",
+      });
+    }
 
-    const deletedConversation = await ConversationService.deleteConversation(id);
+    const deletedConversation = await ConversationService.deleteConversation(idStr);
 
     res.status(200).json({
       success: true,
@@ -91,6 +108,15 @@ export const deleteConversation = async (req: Request, res: Response) => {
 export const pinConversation = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const idStr = Array.isArray(id) ? id[0] : id;
+    
+    if (!idStr) {
+      return res.status(400).json({
+        success: false,
+        message: "id is required",
+      });
+    }
+
     const { isPinned } = req.body;
 
     if (typeof isPinned !== "boolean") {
@@ -101,7 +127,7 @@ export const pinConversation = async (req: Request, res: Response) => {
     }
 
     const updatedConversation = await ConversationService.pinConversation(
-      id,
+      idStr,
       isPinned
     );
 

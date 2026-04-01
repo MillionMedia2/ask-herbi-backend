@@ -1,10 +1,18 @@
 import { Schema, model, Document, Types } from "mongoose";
 
+/** Snapshot from /recommend-products, stored on the assistant message that triggered it */
+export interface IRecommendedProductsPayload {
+  count: number;
+  category?: string;
+  products: Record<string, unknown>[];
+}
+
 export interface IMessage extends Document {
   conversationId: Types.ObjectId;
   senderId?: string;
   content: string;
   createdAt: Date;
+  recommendedProducts?: IRecommendedProductsPayload;
 }
 
 const MessageSchema = new Schema<IMessage>(
@@ -22,6 +30,10 @@ const MessageSchema = new Schema<IMessage>(
     content: {
       type: String,
       required: true,
+    },
+    recommendedProducts: {
+      type: Schema.Types.Mixed,
+      required: false,
     },
   },
   {

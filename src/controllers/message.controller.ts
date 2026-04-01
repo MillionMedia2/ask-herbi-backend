@@ -110,6 +110,44 @@ export const createMessage = async (req: Request, res: Response) => {
   }
 };
 
+export const patchMessageRecommendedProducts = async (
+  req: Request,
+  res: Response
+) => {
+  try {
+    const { messageId } = req.params;
+    const id = Array.isArray(messageId) ? messageId[0] : messageId;
+    const { count, category, products } = req.body as {
+      count?: number;
+      category?: string;
+      products?: unknown[];
+    };
+
+    if (typeof count !== "number" || !Array.isArray(products)) {
+      return res.status(400).json({
+        success: false,
+        message: "count (number) and products (array) are required",
+      });
+    }
+
+    const message = await MessageService.attachRecommendedProducts(id, {
+      count,
+      category,
+      products,
+    });
+
+    res.status(200).json({
+      success: true,
+      data: message,
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+};
+
 export const getMessages = async (req: Request, res: Response) => {
   try {
     const { conversationId } = req.params;

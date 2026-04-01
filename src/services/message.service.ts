@@ -36,3 +36,34 @@ export const getMessagesByConversation = async (conversationId: string) => {
     conversationId: new Types.ObjectId(conversationId),
   }).sort({ createdAt: 1 });
 };
+
+export const attachRecommendedProducts = async (
+  messageId: string,
+  payload: { count: number; category?: string; products: unknown[] }
+) => {
+  if (!Types.ObjectId.isValid(messageId)) {
+    throw new Error("Invalid message id");
+  }
+  if (!Array.isArray(payload.products)) {
+    throw new Error("products must be an array");
+  }
+  const updated = await MessageModel.findByIdAndUpdate(
+    messageId,
+    {
+      $set: {
+        recommendedProducts: {
+          count: payload.count,
+          ...(payload.category !== undefined && payload.category !== ""
+            ? { category: payload.category }
+            : {}),
+          products: payload.products,
+        },
+      },
+    },
+    { new: true }
+  );
+  if (!updated) {
+    throw new Error("Message not found");
+  }
+  return updated;
+};

@@ -6,6 +6,7 @@ import productsRoute from "./routes/productRoutes";
 import classifyRoute from "./routes/classifyRoutes";
 import messageRoute from "./routes/message.routes";
 import conversationRoute from "./routes/conversation.routes";
+import recommendRoute from "./routes/recommendRoutes";
 import morgan from "morgan";
 
 dotenv.config();
@@ -31,6 +32,7 @@ app.get("/ping", (req, res) => {
 app.use("/api", aiRoutes);
 app.use("/api", productsRoute);
 app.use("/api", classifyRoute);
+app.use("/api", recommendRoute);
 app.use("/api", messageRoute);
 app.use("/api", conversationRoute);
 

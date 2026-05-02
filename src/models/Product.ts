@@ -8,11 +8,14 @@ export interface IProduct extends Document {
   price: string;
   regular_price: string;
   sale_price?: string;
+  embedding_text?: string;
   stock_quantity?: number | null;
   stock_status: string;
   on_sale: boolean;
   category: string;
   brand: string;
+  conditions?: string[];
+  body_systems?: string[];
   images: {
     id: number;
     src: string;
@@ -37,6 +40,7 @@ const productSchema = new Schema<IProduct>(
     price: { type: String, required: true },
     regular_price: { type: String, required: true },
     sale_price: { type: String, default: "" },
+    embedding_text: { type: String, default: "" },
 
     stock_quantity: { type: Number, default: null },
     stock_status: { type: String, required: true },
@@ -44,6 +48,8 @@ const productSchema = new Schema<IProduct>(
 
     category: { type: String, required: true },
     brand: { type: String, required: true },
+    conditions: { type: [String], default: [] },
+    body_systems: { type: [String], default: [] },
 
     images: { type: [imageSchema], default: [] },
   },

@@ -347,3 +347,86 @@ const startProductCron = () => {
 };
 
 export default startProductCron;
+
+
+
+
+
+// import cron from "node-cron";
+// import { wooApi } from "../services/wooClient";
+// import fs from "fs";
+// import path from "path";
+
+// type WooProduct = {
+//   id: number;
+//   name?: string;
+//   slug?: string;
+//   permalink?: string;
+//   price?: string | number | null;
+//   regular_price?: string | number | null;
+//   sale_price?: string | number | null;
+//   stock_quantity?: number | null;
+//   stock_status?: string;
+//   on_sale?: boolean;
+//   categories?: { id?: number; name?: string }[];
+//   brands?: { id?: number; name?: string }[];
+//   images?: { id?: number; src?: string }[];
+// };
+
+// // ✅ Fetch ALL products (no filters)
+// const fetchWooProducts = async (): Promise<WooProduct[]> => {
+//   try {
+//     const perPage = 100;
+//     let page = 1;
+//     let allProducts: WooProduct[] = [];
+
+//     while (true) {
+//       const { data } = await wooApi.get("products", {
+//         per_page: perPage,
+//         page,
+//         // ❌ removed filters → gets ALL products
+//       });
+
+//       const batch = (data ?? []) as WooProduct[];
+//       if (!batch.length) break;
+
+//       allProducts = [...allProducts, ...batch];
+//       page++;
+//     }
+
+//     return allProducts;
+//   } catch (err: any) {
+//     console.error("❌ Failed to fetch Woo products:", err.message);
+//     return [];
+//   }
+// };
+
+// // ✅ Cron function
+// const startProductCron = () => {
+//   // ⏱ Run every 1 minute
+//   cron.schedule("* * * * *", async () => {
+//     console.log("⏳ Cron Started: Fetching ALL Woo Products...");
+
+//     const wooProducts = await fetchWooProducts();
+
+//     if (!wooProducts.length) {
+//       console.log("⚠ No products found!");
+//       return;
+//     }
+
+//     try {
+//       const filePath = path.join(process.cwd(), "woo-products.json");
+
+//       fs.writeFileSync(
+//         filePath,
+//         JSON.stringify(wooProducts, null, 2)
+//       );
+
+//       console.log(`✅ Saved ${wooProducts.length} products to woo-products.json`);
+//     } catch (err: any) {
+//       console.error("❌ Failed to save JSON:", err.message);
+//     }
+//   });
+// };
+
+// export default startProductCron;

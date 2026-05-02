@@ -25,9 +25,7 @@ export const getRecommendedProducts = async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error("Error in getRecommendedProducts:", error);
-    return res
-      .status(500)
-      .json({ error: "Failed to recommend products." });
+    return res.status(500).json({ error: "Failed to recommend products." });
   }
 };
 
@@ -50,4 +48,3 @@ export const getSearchedProducts = async (req: Request, res: Response) => {
     return res.status(500).json({ error: "Failed to search products." });
   }
 };
-

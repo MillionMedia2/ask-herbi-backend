@@ -97,6 +97,8 @@ export interface RecommendedProduct {
   images: string[];
   permalink: string;
   product_type: string;
+  /** WooCommerce numeric product ID (for add-to-cart) */
+  wooProductId?: number;
   // plantz-products document fields (optional)
   title?: string;
   docCanonicalId?: string;
@@ -111,6 +113,7 @@ export interface RecommendedProduct {
 }
 
 type DbProductLite = {
+  id: number;
   slug: string;
   permalink: string;
   price: string;
@@ -146,6 +149,7 @@ async function mergeDbProductFields(
   const dbRows = (await Product.find(
     { slug: { $in: slugCandidates } },
     {
+      id: 1,
       slug: 1,
       permalink: 1,
       price: 1,
@@ -180,16 +184,14 @@ async function mergeDbProductFields(
 
     return {
       ...p,
+      wooProductId: Number.isFinite(fromDb.id) ? fromDb.id : undefined,
       price: fromDb.price ?? p.price,
       regular_price: fromDb.regular_price,
       sale_price: fromDb.sale_price,
       stock_quantity: fromDb.stock_quantity,
       stock_status: fromDb.stock_status,
-      // For plantz products, permalink is often null -> prefer Woo permalink
       permalink: fromDb.permalink || p.permalink,
-      // Prefer Woo images when available for matched products
       images: mergedImages,
-      // For matched products, stock truth should come from Woo/Mongo.
       in_stock:
         fromDb.stock_status?.toLowerCase() === "instock" ||
         (typeof fromDb.stock_quantity === "number" &&

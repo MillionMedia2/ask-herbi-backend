@@ -89,6 +89,7 @@
 
 import { Request, Response } from "express";
 import { AIService } from "../services/ai.service";
+import { normalizePersona } from "../utils/personas";
 
 const aiService = new AIService();
 
@@ -97,7 +98,7 @@ const aiService = new AIService();
  */
 export const askAI = async (req: Request, res: Response) => {
   try {
-    const { question, conversationId } = req.body;
+    const { question, conversationId, persona } = req.body;
 
     if (!question || typeof question !== "string") {
       return res
@@ -107,7 +108,8 @@ export const askAI = async (req: Request, res: Response) => {
 
     const response = await aiService.getAnswer({
       question,
-      conversationId, // Pass conversationId to maintain context
+      conversationId,
+      persona: normalizePersona(persona),
     });
 
     if (!response.success) {
@@ -131,9 +133,11 @@ export const askAI = async (req: Request, res: Response) => {
  */
 export const askAIStream = async (req: Request, res: Response) => {
   try {
-    const { question, conversationId } = req.body;
+    const { question, conversationId, persona } = req.body;
+    const resolvedPersona = normalizePersona(persona);
     console.log("📩 Received streaming question:", question);
     console.log("💬 Conversation ID:", conversationId);
+    console.log("🎭 Persona:", resolvedPersona);
 
     if (!question || typeof question !== "string") {
       return res
@@ -148,7 +152,8 @@ export const askAIStream = async (req: Request, res: Response) => {
 
     const stream = await aiService.getAnswerStreamTransformed({
       question,
-      conversationId, // Pass conversationId to maintain context
+      conversationId,
+      persona: resolvedPersona,
     });
     const reader = stream.getReader();
 

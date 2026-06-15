@@ -29,7 +29,7 @@ export function buildContextUserMessage(
 
   const contextInstructions =
     persona === "aisha"
-      ? `- Prioritise the reference context above when answering.\n- If context is insufficient, say what you're unsure about and give carefully bounded guidance.\n- Apply Aisha-mode voice: warm, female-aware, evidence-led.\n- Do not mention sources, citations, or a knowledge base.`
+      ? `- Prioritise the reference context above when answering.\n- If context is insufficient, say what you're unsure about and give carefully bounded guidance.\n- Apply Aisha-mode voice: calm guide (not guru), educate don't sell, bridge science and soul.\n- Follow UK regulatory compliance: no cure/treat/prevent claims; no personalised medical advice.\n- Do not mention sources, citations, or a knowledge base.`
       : `- Use only the context above to answer.\n- If the context is insufficient, say you're not sure.\n- Do not mention sources, citations, or a knowledge base.`;
 
   return `Context:\n${context}\n\nQuestion: ${question}\n\nInstructions:\n${contextInstructions}`;

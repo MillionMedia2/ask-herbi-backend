@@ -1,7 +1,14 @@
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import { Pinecone } from "@pinecone-database/pinecone";
-import { HERBAL_EXPERT_PROMPT } from "../utils/prompt";
+import {
+  buildCacheKey,
+  buildContextUserMessage,
+  DEFAULT_PERSONA,
+  getSystemPrompt,
+  normalizePersona,
+  type PersonaId,
+} from "../utils/personas";
 
 dotenv.config();
 
@@ -15,13 +22,22 @@ const pinecone = new Pinecone({
 });
 
 const cache = new Map<string, string>();
-const conversationHistory = new Map<string, OpenAI.Chat.ChatCompletionMessageParam[]>();
+const conversationHistory = new Map<
+  string,
+  OpenAI.Chat.ChatCompletionMessageParam[]
+>();
+const conversationMeta = new Map<string, { persona: PersonaId }>();
 
-// Type definitions
 type PineconeHit = {
   id: string;
   chunk_text: string;
   score?: number;
+};
+
+type AskParams = {
+  question: string;
+  conversationId?: string;
+  persona?: PersonaId;
 };
 
 export class AIService {
@@ -39,10 +55,43 @@ export class AIService {
     this.pc = pinecone;
   }
 
-  /**
-   * Search Pinecone using integrated embeddings (REST API)
-   * Matches exact implementation from pinecone-main project
-   */
+  private resolvePersona(persona?: PersonaId): PersonaId {
+    return normalizePersona(persona ?? DEFAULT_PERSONA);
+  }
+
+  private getOrInitMessages(
+    conversationId: string | undefined,
+    persona: PersonaId,
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    if (
+      conversationId &&
+      conversationHistory.has(conversationId) &&
+      conversationMeta.get(conversationId)?.persona === persona
+    ) {
+      return [...conversationHistory.get(conversationId)!];
+    }
+
+    if (conversationId && conversationHistory.has(conversationId)) {
+      this.clearConversation(conversationId);
+    }
+
+    return [
+      {
+        role: "system",
+        content: getSystemPrompt(persona),
+      },
+    ];
+  }
+
+  private saveConversationTurn(
+    conversationId: string,
+    messages: OpenAI.Chat.ChatCompletionMessageParam[],
+    persona: PersonaId,
+  ): void {
+    conversationHistory.set(conversationId, messages);
+    conversationMeta.set(conversationId, { persona });
+  }
+
   private async searchContext(
     question: string,
     topK: number = 5,
@@ -53,7 +102,6 @@ export class AIService {
       console.log(`   Namespace: ${this.namespace}`);
       console.log(`   Top K: ${topK}`);
 
-      // Exact same REST API call as pinecone-main
       const pineconeUrl = `https://${this.indexHost}/records/namespaces/${this.namespace}/search`;
 
       const searchBody = {
@@ -61,7 +109,7 @@ export class AIService {
           inputs: { text: question },
           top_k: topK,
         },
-        fields: ["text"], // keep payload small (same as main)
+        fields: ["text"],
       };
 
       console.log("🔄 [PINECONE] Making REST API call...");
@@ -100,15 +148,13 @@ export class AIService {
 
       console.log(`📊 [PINECONE] Found ${hits.length} total matches`);
 
-      // Log all matches with scores (same format as main)
       hits.forEach((hit: any, idx: number) => {
         const score = hit._score || hit.score || 0;
         const id = hit._id || hit.id || "unknown";
         console.log(`   ${idx + 1}. ID: ${id} | Score: ${score.toFixed(4)}`);
       });
 
-      // Exact same parsing as pinecone-main (no score filtering)
-      const MAX_CHARS = 4000; // Same as main
+      const MAX_CHARS = 4000;
       const sources: PineconeHit[] = hits
         .map((hit: any): PineconeHit | null => {
           const fullText = hit.fields?.text || "";
@@ -127,7 +173,6 @@ export class AIService {
             s !== null && s.chunk_text.length > 0,
         );
 
-      // Same context joining format as main: \n\n---\n\n
       const context = sources
         .map((s: PineconeHit) => s.chunk_text)
         .join("\n\n---\n\n");
@@ -149,35 +194,26 @@ export class AIService {
     }
   }
 
-  /**
-   * Non-streaming version with Pinecone
-   * Matches pinecone-main settings exactly
-   */
-  async getAnswer({ 
-    question, 
-    conversationId 
-  }: { 
-    question: string;
-    conversationId?: string;
-  }) {
+  async getAnswer({ question, conversationId, persona }: AskParams) {
+    const resolvedPersona = this.resolvePersona(persona);
+
     console.log("\n" + "=".repeat(80));
     console.log("🚀 [API CALL] Starting getAnswer");
+    console.log(`🎭 [PERSONA] ${resolvedPersona}`);
     console.log("=".repeat(80));
 
-    if (cache.has(question)) {
+    const cacheKey = buildCacheKey(resolvedPersona, question);
+    if (cache.has(cacheKey)) {
       console.log("[CACHE] Found cached answer");
-      return { 
-        success: true, 
-        answer: cache.get(question)!,
-        conversationId: conversationId || undefined
+      return {
+        success: true,
+        answer: cache.get(cacheKey)!,
+        conversationId: conversationId || undefined,
       };
     }
 
     try {
-      // Determine top_k based on namespace (same logic as main)
       const topK = this.namespace === "cannabis" ? 8 : 5;
-
-      // Get relevant context from Pinecone
       const context = await this.searchContext(question, topK);
 
       if (!context || context.length === 0) {
@@ -188,49 +224,30 @@ export class AIService {
         console.log("[CONTEXT] Using Pinecone knowledge base");
       }
 
-      // Get conversation history if conversationId exists
-      let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-      
-      if (conversationId && conversationHistory.has(conversationId)) {
-        // Use existing conversation history
-        messages = [...conversationHistory.get(conversationId)!];
-      } else {
-        // Start new conversation with system prompt
-        messages = [
-          {
-            role: "system",
-            content: HERBAL_EXPERT_PROMPT,
-          },
-        ];
-      }
+      const messages = this.getOrInitMessages(conversationId, resolvedPersona);
 
-      // Add user message with context
       messages.push({
         role: "user",
-        content: context
-          ? `Context:\n${context}\n\nQuestion: ${question}\n\nInstructions:\n- Use only the context above to answer.\n- If the context is insufficient, say you're not sure.\n- Do not mention sources, citations, or a knowledge base.`
-          : question,
+        content: buildContextUserMessage(question, context, resolvedPersona),
       });
 
       console.log("[OPENAI] Sending request to GPT-4o-mini...");
 
-      // Exact same OpenAI settings as pinecone-main
       const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini", // Same model
+        model: "gpt-4o-mini",
         messages,
-        temperature: 0.7, // Same temperature
-        top_p: 0.9, // Same top_p (was missing before)
+        temperature: 0.7,
+        top_p: 0.9,
       });
 
       const answer = response.choices[0].message.content || "";
 
-      // Add assistant response to conversation history
       if (conversationId) {
         messages.push({
           role: "assistant",
           content: answer,
         });
-        conversationHistory.set(conversationId, messages);
+        this.saveConversationTurn(conversationId, messages, resolvedPersona);
       }
 
       console.log("[OPENAI] Response received");
@@ -238,46 +255,38 @@ export class AIService {
       console.log(`[RESPONSE] Preview: ${answer.substring(0, 150)}...`);
       console.log("=".repeat(80) + "\n");
 
-      cache.set(question, answer);
+      cache.set(cacheKey, answer);
 
-      return { 
-        success: true, 
+      return {
+        success: true,
         answer,
-        conversationId: conversationId || undefined
+        conversationId: conversationId || undefined,
       };
     } catch (error: any) {
       console.error("[ERROR]:", error.message);
-      return { 
-        success: false, 
+      return {
+        success: false,
         answer: "Error: Unable to get response.",
-        conversationId: conversationId || undefined
+        conversationId: conversationId || undefined,
       };
     }
   }
 
-  /**
-   * Streaming version with Pinecone
-   * Matches pinecone-main settings exactly
-   */
-  async getAnswerStream({ 
-    question, 
-    conversationId 
-  }: { 
-    question: string;
-    conversationId?: string;
-  }): Promise<{
+  async getAnswerStream({ question, conversationId, persona }: AskParams): Promise<{
     stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
     conversationId?: string;
+    persona: PersonaId;
+    userMessageContent: string;
   }> {
+    const resolvedPersona = this.resolvePersona(persona);
+
     console.log("\n" + "=".repeat(80));
     console.log("[API CALL] Starting getAnswerStream");
+    console.log(`🎭 [PERSONA] ${resolvedPersona}`);
     console.log("=".repeat(80));
 
     try {
-      // Determine top_k based on namespace (same logic as main)
       const topK = this.namespace === "cannabis" ? 8 : 5;
-
-      // Get relevant context from Pinecone
       const context = await this.searchContext(question, topK);
 
       if (!context || context.length === 0) {
@@ -288,62 +297,56 @@ export class AIService {
         console.log("[CONTEXT] Using Pinecone knowledge base for streaming");
       }
 
-      // Get conversation history if conversationId exists
-      let messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
-      
-      if (conversationId && conversationHistory.has(conversationId)) {
-        // Use existing conversation history
-        messages = [...conversationHistory.get(conversationId)!];
-      } else {
-        // Start new conversation with system prompt
-        messages = [
-          {
-            role: "system",
-            content: HERBAL_EXPERT_PROMPT,
-          },
-        ];
-      }
+      const messages = this.getOrInitMessages(conversationId, resolvedPersona);
+      const userMessageContent = buildContextUserMessage(
+        question,
+        context,
+        resolvedPersona,
+      );
 
-      // Add user message with context
       messages.push({
         role: "user",
-        content: context
-          ? `Context:\n${context}\n\nQuestion: ${question}\n\nInstructions:\n- Use only the context above to answer.\n- If the context is insufficient, say you're not sure.\n- Do not mention sources, citations, or a knowledge base.`
-          : question,
+        content: userMessageContent,
       });
 
       console.log("[OPENAI] Starting streaming response...");
 
-      // Exact same OpenAI settings as pinecone-main
       const stream = await openai.chat.completions.create({
-        model: "gpt-4o-mini", // Same model
+        model: "gpt-4o-mini",
         messages,
-        temperature: 0.7, // Same temperature
-        top_p: 0.9, // Same top_p
+        temperature: 0.7,
+        top_p: 0.9,
         stream: true,
       });
 
-      return { stream, conversationId };
+      return {
+        stream,
+        conversationId,
+        persona: resolvedPersona,
+        userMessageContent,
+      };
     } catch (error: any) {
       console.error("[STREAMING ERROR]:", error.message);
       throw error;
     }
   }
 
-  /**
-   * Streaming version with custom ReadableStream for easier consumption
-   */
   async getAnswerStreamTransformed({
     question,
     conversationId,
-  }: {
-    question: string;
-    conversationId?: string;
-  }): Promise<ReadableStream<string>> {
-    const { stream, conversationId: returnedConversationId } = await this.getAnswerStream({ 
+    persona,
+  }: AskParams): Promise<ReadableStream<string>> {
+    const {
+      stream,
+      conversationId: returnedConversationId,
+      persona: resolvedPersona,
+      userMessageContent,
+    } = await this.getAnswerStream({
       question,
-      conversationId 
+      conversationId,
+      persona,
     });
+
     let fullAnswer = "";
     let chunkCount = 0;
     const finalConversationId = returnedConversationId || conversationId;
@@ -353,7 +356,6 @@ export class AIService {
         try {
           console.log("[STREAM] Starting to process chunks...");
 
-          // Send conversationId at the start if it exists
           if (finalConversationId) {
             controller.enqueue(`__CONVERSATION_ID__:${finalConversationId}`);
           }
@@ -367,42 +369,50 @@ export class AIService {
               controller.enqueue(content);
             }
 
-            // Check if stream is done
             if (chunk.choices[0]?.finish_reason === "stop") {
               console.log(`[STREAM] Completed - ${chunkCount} chunks received`);
               console.log(
                 `[STREAM] Total response length: ${fullAnswer.length} characters`,
               );
 
-              // Save to conversation history if conversationId exists
               if (finalConversationId && fullAnswer) {
-                const messages = conversationHistory.get(finalConversationId) || [
-                  {
-                    role: "system",
-                    content: HERBAL_EXPERT_PROMPT,
-                  },
-                ];
-                
-                // Add user message if not already added
-                const lastMessage = messages[messages.length - 1];
-                if (lastMessage?.role !== "user") {
-                  messages.push({
-                    role: "user",
-                    content: question,
-                  });
+                let messages: OpenAI.Chat.ChatCompletionMessageParam[];
+
+                if (
+                  conversationHistory.has(finalConversationId) &&
+                  conversationMeta.get(finalConversationId)?.persona ===
+                    resolvedPersona
+                ) {
+                  messages = [...conversationHistory.get(finalConversationId)!];
+                } else {
+                  messages = [
+                    {
+                      role: "system",
+                      content: getSystemPrompt(resolvedPersona),
+                    },
+                  ];
                 }
-                
-                // Add assistant response
+
+                messages.push({
+                  role: "user",
+                  content: userMessageContent,
+                });
                 messages.push({
                   role: "assistant",
                   content: fullAnswer,
                 });
-                
+
                 conversationHistory.set(finalConversationId, messages);
+                conversationMeta.set(finalConversationId, {
+                  persona: resolvedPersona,
+                });
               }
 
               if (fullAnswer) {
-                cache.set(question, fullAnswer);
+                cache.set(
+                  buildCacheKey(resolvedPersona, question),
+                  fullAnswer,
+                );
                 console.log("💾 [CACHE] Response cached");
               }
               console.log("=".repeat(80) + "\n");
@@ -418,13 +428,13 @@ export class AIService {
     });
   }
 
-  /**
-   * Clear conversation history for a given conversationId
-   */
   clearConversation(conversationId: string): void {
     if (conversationHistory.has(conversationId)) {
       conversationHistory.delete(conversationId);
-      console.log(`[CONVERSATION] Cleared history for conversationId: ${conversationId}`);
+      conversationMeta.delete(conversationId);
+      console.log(
+        `[CONVERSATION] Cleared history for conversationId: ${conversationId}`,
+      );
     }
   }
 }

@@ -4,7 +4,6 @@ import connectDB from "../src/config/db";
 import { wooApi } from "../src/services/wooClient";
 import Product from "../src/models/Product";
 import { enrichProduct } from "../src/services/productEnrichment";
-import { upsertToPinecone } from "../src/services/productSearch";
 
 dotenv.config();
 
@@ -80,9 +79,7 @@ async function fetchAllWooProducts(): Promise<WooProduct[]> {
 async function main() {
   await connectDB();
 
-  const namespace =
-    (process.env.PINECONE_PRODUCTS_NAMESPACE || "woocommerce Products").trim();
-  console.log(`Syncing Woo products -> Mongo + Pinecone namespace="${namespace}"`);
+  console.log("Syncing Woo products -> Mongo only (Pinecone writes disabled)");
 
   const wooProducts = await fetchAllWooProducts();
   console.log(`Fetched ${wooProducts.length} Woo products`);
@@ -94,7 +91,6 @@ async function main() {
     const category = getCategoryName(woo);
     const brand = getBrandName(woo);
     const images = mapWooImages(woo);
-    const productType = toStringValue(woo.type);
 
     const enriched = enrichProduct({
       name: woo.name ?? "",
@@ -131,19 +127,6 @@ async function main() {
       { upsert: true, new: true },
     );
 
-    await upsertToPinecone({
-      id: woo.id,
-      name: woo.name ?? "",
-      price: toStringValue(woo.price),
-      stock_status: woo.stock_status,
-      stock_quantity:
-        typeof woo.stock_quantity === "number" ? woo.stock_quantity : null,
-      images: images.map((img) => ({ src: img.src })),
-      permalink: woo.permalink,
-      product_type: productType,
-      embedding_text: enriched.embedding_text,
-    });
-
     upserts += 1;
     if (upserts % 50 === 0) console.log(`Upserted ${upserts}/${wooProducts.length}`);
   }
@@ -156,4 +139,3 @@ main().catch((err) => {
   console.error("❌ runProductSyncOnce failed:", err);
   process.exit(1);
 });
-

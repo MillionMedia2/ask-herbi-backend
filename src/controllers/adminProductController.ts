@@ -46,12 +46,14 @@ export const updateAdminProduct = async (req: Request, res: Response) => {
       return sendError(res, "Invalid product id", 400);
     }
 
-    const { price, stock_status, stock_quantity, image_src } = req.body ?? {};
+    const { price, stock_status, stock_quantity, image_src, images } =
+      req.body ?? {};
 
     const update: Record<string, unknown> = {};
 
     if (typeof price === "string") {
       update.price = price;
+      update.regular_price = price;
     }
 
     if (typeof stock_status === "string") {
@@ -66,13 +68,25 @@ export const updateAdminProduct = async (req: Request, res: Response) => {
       update.stock_quantity = stock_quantity;
     }
 
-    if (typeof image_src === "string" && image_src.trim().length > 0) {
+    if (Array.isArray(images) && images.length > 0) {
+      update.images = images
+        .filter(
+          (img: { src?: string }) =>
+            typeof img?.src === "string" && img.src.trim().length > 0,
+        )
+        .map((img: { id?: number; src?: string }, index: number) => ({
+          id: Number(img?.id ?? 0) || index + 1,
+          src: String(img?.src ?? "").trim(),
+        }));
+    } else if (typeof image_src === "string" && image_src.trim().length > 0) {
       const existing = await Product.findOne({ id: productId }).lean();
       if (!existing) {
         return sendError(res, "Product not found", 404);
       }
 
-      const currentImages = Array.isArray(existing.images) ? existing.images : [];
+      const currentImages = Array.isArray(existing.images)
+        ? existing.images
+        : [];
       const firstImageId = currentImages[0]?.id ?? 1;
       const restImages = currentImages.slice(1);
 
@@ -89,7 +103,7 @@ export const updateAdminProduct = async (req: Request, res: Response) => {
     const updated = await Product.findOneAndUpdate(
       { id: productId },
       { $set: update },
-      { new: true }
+      { new: true },
     ).lean();
 
     if (!updated) {

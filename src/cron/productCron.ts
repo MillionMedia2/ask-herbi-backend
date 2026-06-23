@@ -2,11 +2,6 @@ import cron from "node-cron";
 import Product from "../models/Product";
 import { wooApi } from "../services/wooClient";
 import { enrichProduct } from "../services/productEnrichment";
-import {
-  deleteProductFromPinecone,
-  upsertToPinecone,
-} from "../services/productSearch";
-import { getPlantz1Namespace } from "../utils/pineconeClient";
 
 type WooBrand = { id?: number; name?: string };
 type WooCategory = { id?: number; name?: string };
@@ -29,9 +24,6 @@ type WooProduct = {
   brands?: WooBrand[];
   images?: WooImage[];
 };
-
-const PRODUCTS_NAMESPACE =
-  process.env.PINECONE_PRODUCTS_NAMESPACE || "woocommerce Products";
 
 function toStringValue(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -77,15 +69,6 @@ function mapWooImages(product: WooProduct): Array<{ id: number; src: string }> {
     .filter((img) => img.id !== 0 && img.src);
 }
 
-function isInStock(product: WooProduct): boolean {
-  const stockStatus = product.stock_status?.toLowerCase();
-  if (stockStatus === "instock") return true;
-  if (typeof product.stock_quantity === "number") {
-    return product.stock_quantity > 0;
-  }
-  return false;
-}
-
 function mapConditionsFromCategory(category: string): string[] {
   const c = (category ?? "").toLowerCase();
   const conditions: string[] = [];
@@ -127,7 +110,12 @@ function mapBodySystemsFromCategory(category: string): string[] {
 
   if (!c) return [];
 
-  if (c.includes("sleep") || c.includes("stress") || c.includes("anxiety") || c.includes("calm")) {
+  if (
+    c.includes("sleep") ||
+    c.includes("stress") ||
+    c.includes("anxiety") ||
+    c.includes("calm")
+  ) {
     bodySystems.push("nervous system");
   }
 
@@ -190,31 +178,26 @@ const startProductCron = () => {
       return;
     }
 
-    const wooIds = wooProducts.map((p) => p.id).filter((id) => Number.isFinite(id));
+    const wooIds = wooProducts
+      .map((p) => p.id)
+      .filter((id) => Number.isFinite(id));
     const wooIdSet = new Set(wooIds);
 
     // Load existing products once for faster lookups (lean for reliable field comparison)
     const existingProducts = await Product.find({ id: { $in: wooIds } }).lean();
     const existingById = new Map(existingProducts.map((p) => [p.id, p]));
 
-    // Delete Pinecone records for products no longer present in Woo
     const existingAll = await Product.find({}, { id: 1, _id: 0 }).lean();
     const removedIds = existingAll
       .map((p: any) => p.id)
       .filter((id: number) => !wooIdSet.has(id));
 
-    const productsNamespace = getPlantz1Namespace(PRODUCTS_NAMESPACE);
-
-    for (const removedId of removedIds) {
-      await deleteProductFromPinecone(removedId);
-    }
-
     if (removedIds.length > 0) {
       await Product.deleteMany({ id: { $in: removedIds } });
     }
 
-    let fullUpserts = 0;
-    let metadataOnlyUpdates = 0;
+    let mongoFullUpdates = 0;
+    let mongoMetadataUpdates = 0;
     let imageUpdates = 0;
 
     for (const woo of wooProducts) {
@@ -223,7 +206,6 @@ const startProductCron = () => {
       const category = getCategoryName(woo);
       const brand = getBrandName(woo);
       const images = mapWooImages(woo);
-      const productType = toStringValue(woo.type);
 
       const enriched = enrichProduct({
         name: woo.name ?? "",
@@ -232,7 +214,8 @@ const startProductCron = () => {
       });
 
       const embeddingTextChanged =
-        !existing || (existing.embedding_text ?? "") !== enriched.embedding_text;
+        !existing ||
+        (existing.embedding_text ?? "") !== enriched.embedding_text;
 
       // Prepare the new mongo fields (including the vector embedding inputs)
       const nextMongoFields = {
@@ -268,26 +251,17 @@ const startProductCron = () => {
           { upsert: true, new: true },
         );
 
-        await upsertToPinecone({
-          id: woo.id,
-          name: nextMongoFields.name,
-          price: nextMongoFields.price,
-          stock_status: nextMongoFields.stock_status,
-          stock_quantity: nextMongoFields.stock_quantity,
-          images: images.map((img) => ({ src: img.src })),
-          permalink: nextMongoFields.permalink,
-          product_type: productType,
-          embedding_text: enriched.embedding_text,
-        });
-
-        fullUpserts += 1;
+        mongoFullUpdates += 1;
         continue;
       }
 
-      // If embedding isn't changing, only update Mongo/Pinecone when needed.
+      // If embedding isn't changing, only update Mongo when needed.
       if (!existing) continue; // embeddingTextChanged=false implies existing exists
 
-      const imagesChanged = !imagesEqual(existing.images, nextMongoFields.images);
+      const imagesChanged = !imagesEqual(
+        existing.images,
+        nextMongoFields.images,
+      );
       const metadataChanged =
         existing.name !== nextMongoFields.name ||
         existing.slug !== nextMongoFields.slug ||
@@ -337,30 +311,16 @@ const startProductCron = () => {
         { new: true },
       );
 
-      await productsNamespace.update({
-        id: `product::${woo.id}`,
-        metadata: {
-          name: nextMongoFields.name,
-          price: nextMongoFields.price,
-          in_stock: isInStock(woo),
-          images: images.map((img) => img.src),
-          permalink: nextMongoFields.permalink,
-          product_type: productType,
-        },
-      });
-
       if (imagesChanged) {
         imageUpdates += 1;
       }
-      metadataOnlyUpdates += 1;
+      mongoMetadataUpdates += 1;
     }
 
     console.log(
-      `✅ Cron Completed: Woo=${wooProducts.length}, Pinecone fullUpserts=${fullUpserts}, metadataOnlyUpdates=${metadataOnlyUpdates}, imageUpdates=${imageUpdates}, removed=${removedIds.length}`,
+      `✅ Cron Completed: Woo=${wooProducts.length}, mongoFullUpdates=${mongoFullUpdates}, mongoMetadataUpdates=${mongoMetadataUpdates}, imageUpdates=${imageUpdates}, removed=${removedIds.length}`,
     );
   });
 };
 
 export default startProductCron;
-
-
